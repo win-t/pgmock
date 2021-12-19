@@ -67,27 +67,27 @@ func NewController(containerName string, postgresMajorVersion int, setup func(fi
 	}()
 
 	if _, err := conn.Exec(ctx, fmt.Sprintf(`select pg_advisory_lock(%d)`, lockID)); err != nil {
-		return nil, pgClientError(err, "failed to acquire lock")
+		return nil, fmt.Errorf("failed to acquire lock")
 	}
 
 	var templateExists bool
 	if err := conn.QueryRow(ctx,
 		fmt.Sprintf(`select count(datname) = 1 from pg_catalog.pg_database where datname = '%s'`, mockIdentifier),
 	).Scan(&templateExists); err != nil {
-		return nil, pgClientError(err, "cannot query template database information")
+		return nil, fmt.Errorf("cannot query template database information")
 	}
 
 	if !templateExists {
 		if _, err := conn.Exec(ctx,
 			fmt.Sprintf(`create role %s with login password '%s';`, mockIdentifier, mockIdentifier),
 		); err != nil {
-			return nil, pgClientError(err, "cannot create template role")
+			return nil, fmt.Errorf("cannot create template role")
 		}
 
 		if _, err := conn.Exec(ctx,
 			fmt.Sprintf(`create database %s template template0`, mockIdentifier),
 		); err != nil {
-			return nil, pgClientError(err, "cannot create template database")
+			return nil, fmt.Errorf("cannot create template database")
 		}
 	}
 
@@ -95,7 +95,7 @@ func NewController(containerName string, postgresMajorVersion int, setup func(fi
 		if _, err := conn.Exec(ctx,
 			fmt.Sprintf(`alter database %s with is_template false allow_connections true`, mockIdentifier),
 		); err != nil {
-			return nil, pgClientError(err, "cannot unlock template database")
+			return nil, fmt.Errorf("cannot unlock template database")
 		}
 
 		if err := setup(!templateExists, cloneTarget(target, mockIdentifier, mockIdentifier, mockIdentifier).String()); err != nil {
@@ -106,11 +106,11 @@ func NewController(containerName string, postgresMajorVersion int, setup func(fi
 	if _, err := conn.Exec(ctx,
 		fmt.Sprintf(`alter database %s with is_template true allow_connections false`, mockIdentifier),
 	); err != nil {
-		return nil, pgClientError(err, "cannot lock template database")
+		return nil, fmt.Errorf("cannot lock template database")
 	}
 
 	if _, err := conn.Exec(ctx, fmt.Sprintf(`select pg_advisory_unlock(%d)`, lockID)); err != nil {
-		return nil, pgClientError(err, "failed to release lock")
+		return nil, fmt.Errorf("failed to release lock")
 	}
 
 	initialized = true
@@ -165,7 +165,7 @@ func (t *Controller) Instantiate() (*Instance, error) {
 	defer t.mu.Unlock()
 
 	if t.closed {
-		return nil, pgClientError(nil, "template already closed")
+		return nil, fmt.Errorf("template already closed")
 	}
 
 	initialized := false
@@ -193,13 +193,13 @@ func (t *Controller) Instantiate() (*Instance, error) {
 	if _, err := t.conn.Exec(ctx, fmt.Sprintf(``+
 		`create role %s with login password '%s' in role %s;`,
 		name, name, mockIdentifier)); err != nil {
-		return nil, pgClientError(err, "cannot create role")
+		return nil, fmt.Errorf("cannot create role")
 	}
 
 	if _, err := t.conn.Exec(ctx, fmt.Sprintf(``+
 		`create database %s template %s owner %s;`,
 		name, mockIdentifier, name)); err != nil {
-		return nil, pgClientError(err, "cannot create database")
+		return nil, fmt.Errorf("cannot create database")
 	}
 
 	t.instances[name] = struct{}{}
@@ -262,7 +262,7 @@ func createContainer(name string, version int) {
 func startContainer(name string) error {
 	_, err := exec.CommandContext(ctx, "docker", "start", name).Output()
 	if err != nil {
-		return dockerError(err, "cannot start container")
+		return fmt.Errorf("cannot start container")
 	}
 	return nil
 }
@@ -277,12 +277,12 @@ func containerHostPort(name string) (string, error) {
 		"-f", `{{ with (index (index .NetworkSettings.Ports "5432/tcp") 0) }}{{ .HostIp }}#{{ .HostPort }}{{ end }}`,
 	).Output()
 	if err != nil {
-		return "", dockerError(err, "cannot get host and port of container")
+		return "", fmt.Errorf("cannot get host and port of container")
 	}
 
 	parts := strings.Split(strings.TrimSpace(string(out)), "#")
 	if len(parts) != 2 {
-		return "", dockerError(nil, "invalid host and port of container")
+		return "", fmt.Errorf("invalid host and port of container")
 	}
 
 	if parts[0] == "0.0.0.0" || parts[0] == "::" {
@@ -310,7 +310,7 @@ func retryConnect(target string) (*pgx.Conn, error) {
 		select {
 		case <-time.After(100 * time.Millisecond):
 		case <-retryCtx.Done():
-			return nil, pgClientError(err, "timeout when trying to connect")
+			return nil, fmt.Errorf("timeout when trying to connect")
 		}
 	}
 }
@@ -331,22 +331,3 @@ func DockerAvailable() bool {
 	_, err := exec.CommandContext(ctx, "docker", "info").Output()
 	return err == nil
 }
-
-type ErrorType string
-
-const (
-	ErrDocker         ErrorType = "docker"
-	ErrPostgresClient ErrorType = "postgres-client"
-)
-
-type Error struct {
-	Type    ErrorType
-	Message string
-	Cause   error
-}
-
-func (e *Error) Error() string { return e.Message }
-func (e *Error) Unwrap() error { return e.Cause }
-
-func dockerError(cause error, msg string) error   { return &Error{ErrDocker, msg, cause} }
-func pgClientError(cause error, msg string) error { return &Error{ErrPostgresClient, msg, cause} }
