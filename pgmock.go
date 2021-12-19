@@ -31,15 +31,14 @@ type Controller struct {
 	closed    bool
 }
 
-func NewController(ctx context.Context, id string, version int, setup func(connURL, containerName string) error) (*Controller, error) {
+func NewController(ctx context.Context, containerName string, postgresMajorVersion int, setup func(connURL string) error) (*Controller, error) {
 	initialized := false
 
-	name := fmt.Sprintf("pgmock-%s", id)
-	if err := ensureContainerRunning(ctx, name, version); err != nil {
+	if err := ensureContainerRunning(ctx, containerName, postgresMajorVersion); err != nil {
 		return nil, err
 	}
 
-	hostPort, err := containerHostPort(ctx, name)
+	hostPort, err := containerHostPort(ctx, containerName)
 	if err != nil {
 		return nil, err
 	}
@@ -88,7 +87,7 @@ func NewController(ctx context.Context, id string, version int, setup func(connU
 			return nil, pgClientError(err, "cannot unlock template database")
 		}
 
-		if err := setup(cloneTarget(target, "", "", templateName).String(), name); err != nil {
+		if err := setup(cloneTarget(target, "", "", templateName).String()); err != nil {
 			return nil, err
 		}
 	}
@@ -105,7 +104,7 @@ func NewController(ctx context.Context, id string, version int, setup func(connU
 
 	initialized = true
 	return &Controller{
-		name:      name,
+		name:      containerName,
 		target:    target,
 		conn:      conn,
 		instances: make(map[string]struct{}),
@@ -230,18 +229,8 @@ func (i *Instance) Destroy() {
 }
 
 func ensureContainerRunning(ctx context.Context, name string, version int) error {
-	if err := ensureDocker(ctx); err != nil {
-		return err
-	}
 	createContainer(ctx, name, version)
 	return startContainer(ctx, name)
-}
-
-func ensureDocker(ctx context.Context) error {
-	if _, err := exec.CommandContext(ctx, "docker", "info").Output(); err != nil {
-		return dockerError(err, "docker is not available")
-	}
-	return nil
 }
 
 func createContainer(ctx context.Context, name string, version int) {
@@ -326,6 +315,11 @@ func cloneTarget(old *url.URL, user, pass, db string) *url.URL {
 		new.User = url.UserPassword(user, pass)
 	}
 	return new
+}
+
+func DockerAvailable() bool {
+	_, err := exec.CommandContext(context.Background(), "docker", "info").Output()
+	return err == nil
 }
 
 type ErrorType string
