@@ -38,7 +38,7 @@ func TestAll(t *testing.T) {
 }
 
 func testController(ctrName string, destroy bool) {
-	c, err := pgmock.NewController(ctrName, 0, func(firstRun bool, connURL string) error {
+	c, err := pgmock.NewController(ctrName, 14, func(firstRun bool, connURL string) error {
 		if firstRun {
 			conn, err := pgx.Connect(ctx, connURL)
 			check(err)

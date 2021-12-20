@@ -5,9 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"net"
 	"net/url"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -39,13 +37,13 @@ func NewController(containerName string, postgresMajorVersion int, setup func(fi
 
 	initialized := false
 
-	if err := ensureContainerRunning(containerName, postgresMajorVersion); err != nil {
-		return nil, err
-	}
-
-	hostPort, err := containerHostPort(containerName)
+	hostPort, err := dockerInspectHostPortPostgres(containerName)
 	if err != nil {
-		return nil, err
+		dockerRunPostgres(containerName, postgresMajorVersion)
+		hostPort, err = dockerInspectHostPortPostgres(containerName)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	target := &url.URL{
@@ -122,19 +120,6 @@ func NewController(containerName string, postgresMajorVersion int, setup func(fi
 	}, nil
 }
 
-func (t *Controller) DestroyContainer() {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	if t.closed {
-		return
-	}
-
-	t.close_Locked()
-
-	removeContainer(t.name)
-}
-
 func (t *Controller) Close() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -158,6 +143,19 @@ func (t *Controller) close_Locked() {
 	t.conn.Close(ctx)
 
 	t.closed = true
+}
+
+func (t *Controller) DestroyContainer() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.closed {
+		return
+	}
+
+	t.close_Locked()
+
+	dockerRm(t.name)
 }
 
 func (t *Controller) Instantiate() (*Instance, error) {
@@ -238,60 +236,6 @@ func (i *Instance) Destroy() {
 	i.t.destoryInstance(i.name)
 }
 
-func ensureContainerRunning(name string, version int) error {
-	createContainer(name, version)
-	return startContainer(name)
-}
-
-func createContainer(name string, version int) {
-	image := "postgres:alpine"
-	if version != 0 {
-		image = fmt.Sprintf("postgres:%d-alpine", version)
-	}
-	exec.CommandContext(ctx,
-		"docker", "create",
-		"--name", name,
-		"--restart", "unless-stopped",
-		"-l", pgmockLabel,
-		"-p", "5432",
-		"-e", "POSTGRES_PASSWORD="+mockIdentifier,
-		image,
-	).Output()
-}
-
-func startContainer(name string) error {
-	_, err := exec.CommandContext(ctx, "docker", "start", name).Output()
-	if err != nil {
-		return fmt.Errorf("cannot start container")
-	}
-	return nil
-}
-
-func removeContainer(name string) {
-	exec.CommandContext(ctx, "docker", "rm", "-fv", name).Output()
-}
-
-func containerHostPort(name string) (string, error) {
-	out, err := exec.CommandContext(ctx,
-		"docker", "inspect", name,
-		"-f", `{{ with (index (index .NetworkSettings.Ports "5432/tcp") 0) }}{{ .HostIp }}#{{ .HostPort }}{{ end }}`,
-	).Output()
-	if err != nil {
-		return "", fmt.Errorf("cannot get host and port of container")
-	}
-
-	parts := strings.Split(strings.TrimSpace(string(out)), "#")
-	if len(parts) != 2 {
-		return "", fmt.Errorf("invalid host and port of container")
-	}
-
-	if parts[0] == "0.0.0.0" || parts[0] == "::" {
-		parts[0] = "localhost"
-	}
-
-	return net.JoinHostPort(parts[0], parts[1]), nil
-}
-
 func retryConnect(target string) (*pgx.Conn, error) {
 	retryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -301,8 +245,10 @@ func retryConnect(target string) (*pgx.Conn, error) {
 		err error
 	)
 	for {
-		if c, err = pgx.Connect(retryCtx, target); err == nil {
-			if err = c.Ping(retryCtx); err == nil {
+		c, err = pgx.Connect(retryCtx, target)
+		if err == nil {
+			err = c.Ping(retryCtx)
+			if err == nil {
 				return c, nil
 			}
 		}
@@ -310,7 +256,7 @@ func retryConnect(target string) (*pgx.Conn, error) {
 		select {
 		case <-time.After(100 * time.Millisecond):
 		case <-retryCtx.Done():
-			return nil, fmt.Errorf("timeout when trying to connect")
+			return nil, fmt.Errorf("timeout when trying to connect: %w", err)
 		}
 	}
 }
@@ -325,9 +271,4 @@ func cloneTarget(old *url.URL, user, pass, db string) *url.URL {
 		new.User = url.UserPassword(user, pass)
 	}
 	return new
-}
-
-func DockerAvailable() bool {
-	_, err := exec.CommandContext(ctx, "docker", "info").Output()
-	return err == nil
 }
