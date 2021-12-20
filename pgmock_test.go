@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -31,9 +32,10 @@ func TestAll(t *testing.T) {
 		}
 	}
 	ctrName := fmt.Sprintf("pgmock-%s", strings.ToLower(hex.EncodeToString(random[:])))
-	for i := 0; i < 2; i++ {
-		testController(ctrName, false)
-	}
+	testController(ctrName, false)
+	_, err := exec.Command("docker", "stop", "-t", "1", ctrName).Output()
+	check(err)
+	testController(ctrName, false)
 	testController(ctrName, true)
 }
 

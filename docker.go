@@ -20,7 +20,7 @@ func dockerRunPostgres(name string, version int) {
 		image = fmt.Sprintf("postgres:%d-alpine", version)
 	}
 	exec.CommandContext(ctx,
-		"docker", "run", "-d",
+		"docker", "create",
 		"--name", name,
 		"--restart", "unless-stopped",
 		"-l", pgmockLabel,
@@ -28,6 +28,7 @@ func dockerRunPostgres(name string, version int) {
 		"-e", "POSTGRES_PASSWORD="+mockIdentifier,
 		image,
 	).Output()
+	exec.CommandContext(ctx, "docker", "start", name).Output()
 }
 
 func dockerRm(name string) {
